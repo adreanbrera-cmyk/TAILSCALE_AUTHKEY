@@ -1,81 +1,56 @@
-name: Permanent Linux SSH Server
+name: Windows Cloud RDP
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'  # روشن شدن خودکار هر ۶ ساعت یک‌بار (۲۴/۷)
-  workflow_dispatch:        # استارت دستی با دکمه Run
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: 1. Checkout Repository
-        uses: actions/checkout@v4
-
-      # بازیابی هارد ابری دائمی
-      - name: 2. Restore Persistent Workspace
-        uses: actions/cache@v4
-        with:
-          path: /home/cynetadmin/workspace
-          key: cynet-ssh-workspace-${{ github.run_id }}
-          restore-keys: |
-            cynet-ssh-workspace-
-
-      - name: 3. Setup OpenSSH Server
+      - name: 1. Enable Remote Desktop & Firewall
         run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-server
-          
-          # فعال‌سازی لاگین با پسورد
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      - name: 4. Create User (cynetadmin) with Root Access
+      - name: 2. Create Admin Account
         run: |
-          sudo useradd -m -s /bin/bash cynetadmin || true
-          echo "cynetadmin:Cynet@2026" | sudo chpasswd
-          sudo usermod -aG sudo cynetadmin
-          echo "cynetadmin ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/cynetadmin
-          
-          # ساخت و مجوز پوشه هارد دائمی
-          sudo mkdir -p /home/cynetadmin/workspace
-          sudo chown -R cynetadmin:cynetadmin /home/cynetadmin/workspace
+          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
+          New-LocalUser -Name "NvDAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "NvDAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin P@ssw0rd1qazXSW@#
 
-      - name: 5. Connect Tailscale VPN & Show Access Info
+      - name: 3. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="cynet-linux-ssh"
+          # Download and install Tailscale silently
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
           
-          TS_IP=$(tailscale ip -4)
+          # Connect to Tailscale network
+          Start-Sleep -Seconds 5
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
           
-          echo "=================================================="
-          echo "  >>> PERMANENT LINUX SSH SERVER IS LIVE! <<<"
-          echo "  Tailscale IP  : $TS_IP"
-          echo "  Username      : cynetadmin"
-          echo "  Password      : Cynet@2026"
-          echo "  ------------------------------------------------"
-          echo "  💻 Connect via Terminal / CMD:"
-          echo "  >> ssh cynetadmin@$TS_IP"
-          echo "  ------------------------------------------------"
-          echo "  💾 Persistent Folder : /home/cynetadmin/workspace"
-          echo "=================================================="
+          Start-Sleep -Seconds 8
+          
+          # Get Tailscale IP
+          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
+          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host "  Username     : NvdAdmin" -ForegroundColor Yellow
+          Write-Host "  Password     : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
+          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
+          Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 6. Server Keep-Alive (5h 55m)
+      - name: 4. Keep Server Alive (48 Hours)
         run: |
-          for i in {1..355}; do
-            sleep 60
-            echo "[$i/355] Linux SSH Server is active..."
-          done
-
-      # ذخیره خودکار فایل‌های پوشه دائمی قبل از ری‌استارت
-      - name: 7. Save Workspace to Cloud
-        uses: actions/cache@v4
-        if: always()
-        with:
-          path: /home/cynetadmin/workspace
-          key: cynet-ssh-workspace-${{ github.run_id }}
+          for ($i = 1; $i -le 2880; $i++) {
+            Start-Sleep -Seconds 60
+            Write-Host "[$i/2880] Server running..."
+          }
